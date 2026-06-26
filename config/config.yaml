@@ -1,0 +1,43 @@
+#需要同步的tls secrets
+secrets:
+  - name: dev.openxlab.org.cn-tls
+    namespace: mse-ingress-controller
+    ali_ssl_name: dev.openxlab.org.cn-tls
+  # - name: sciverse-dev.opendatalab.com-tls
+  #   namespace: mse-ingress-controller
+  #   ali_ssl_name: sciverse-dev.opendatalab.com-tls
+# ssl 配置项
+aliyun:
+  # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
+  access_key_id: ""
+  access_key_secret: ""
+  region: cn-hangzhou
+  # 外网 endpoint（use_internal_endpoint=false 时生效）
+  ssl_endpoint: cas.aliyuncs.com
+  # 内网 endpoint（use_internal_endpoint=true 时优先使用，留空则自动使用 cas-vpc.<region>.aliyuncs.com）
+  ssl_internal_endpoint: ""
+  # 是否使用内网 endpoint
+  use_internal_endpoint: false
+  # 阿里云凭证来源（Kubernetes Secret）
+  # kubectl -n mse-ingress-controller create secret generic aliyun-cas-credential \
+  # --from-literal=access_key_id='你的AK' \
+  # --from-literal=access_key_secret='你的SK'
+  credential_secret:
+    namespace: mse-ingress-controller
+    name: aliyun-cas-credential
+    access_key_id_key: access_key_id
+    access_key_secret_key: access_key_secret
+# kubernetes 配置项
+kubernetes:
+  # kubeconfig 方式（本地开发使用）
+  kubeconfig: "/Users/Zhuanz/.kube/public-dev"
+  # in-cluster 方式（Pod 内运行使用，自动使用 ServiceAccount）,优先级高于kubeconfig
+  in_cluster: false
+  # 监控的命名空间
+  watch_namespace: ""
+  # 重试/重连等待时间（秒）
+  resync_period: 30
+# 日志配置项
+logging:
+  level: info
+  format: json
