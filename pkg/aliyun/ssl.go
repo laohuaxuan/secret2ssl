@@ -16,8 +16,8 @@ import (
 
 // SSLClient 阿里云 CAS 客户端
 type SSLClient struct {
-	client *cas.Client
-	cfg    *config.Config
+	client *cas.Client    //阿里云 CAS 客户端
+	cfg    *config.Config //配置
 }
 
 // NewSSLClient 创建阿里云 CAS 客户端
@@ -54,7 +54,7 @@ func NewSSLClient(cfg *config.Config) (*SSLClient, error) {
 
 // SyncSecretToSSL 同步 Secret 到阿里云 SSL
 func (c *SSLClient) SyncSecretToSSL(secret *corev1.Secret, aliSSLName string) error {
-	// 获取证书和私钥
+	// 从secret中获取证书和私钥
 	certData := secret.Data["tls.crt"]
 	keyData := secret.Data["tls.key"]
 
@@ -80,33 +80,34 @@ func (c *SSLClient) SyncSecretToSSL(secret *corev1.Secret, aliSSLName string) er
 
 	log.Printf("Syncing certificate %s to Aliyun SSL...", aliSSLName)
 
-	// 查找证书
+	// 在阿里云SSL中查找证书
 	certId, err := c.findCertificateByName(aliSSLName)
 	if err != nil {
 		return fmt.Errorf("failed to find certificate: %v", err)
 	}
 
-	// 如果证书存在，则删除
+	// 如果证书存在，则删除阿里云SSL中的证书
 	if certId != "" {
 		log.Printf("Deleting existing certificate %s (ID: %s)", aliSSLName, certId)
+		//删除阿里云SSL中的证书，如果证书不存在或者证书正在使用中，则删除失败
 		if err := c.deleteCertificate(certId); err != nil {
 			return fmt.Errorf("failed to delete existing certificate: %v", err)
 		}
 	}
 
 	log.Printf("Uploading new certificate %s", aliSSLName)
-	// 上传证书
+	// 上传证书到阿里云SSL
 	return c.uploadCertificate(aliSSLName, certPEM, keyPEM)
 }
 
-// findCertificateByName 查找证书
+// findCertificateByName 在阿里云SSL查找证书
 func (c *SSLClient) findCertificateByName(name string) (string, error) {
 	// 创建请求
 	request := &cas.ListCertRequest{
 		ShowSize: tea.Int64(100), // 设置本次查询返回条数为 100（分页大小）
 	}
 
-	// 发送请求
+	// 发送请求，获取阿里云SSL中的证书列表
 	response, err := c.client.ListCert(request)
 	if err != nil {
 		return "", fmt.Errorf("failed to list certificates: %v", err)
@@ -133,18 +134,17 @@ func (c *SSLClient) uploadCertificate(name, certPEM, keyPEM string) error {
 		Key:  tea.String(keyPEM),
 	}
 
-	log.Printf("【test】upload request: %+v", request)
-	// 发送请求
-	// _, err := c.client.UploadUserCertificate(request)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to upload certificate: %v", err)
-	// }
+	// 发送请求，上传证书到阿里云SSL
+	_, err := c.client.UploadUserCertificate(request)
+	if err != nil {
+		return fmt.Errorf("failed to upload certificate: %v", err)
+	}
 
 	log.Printf("Certificate %s uploaded successfully", name)
 	return nil
 }
 
-// deleteCertificate 删除证书
+// deleteCertificate 删除阿里云SSL中的证书
 func (c *SSLClient) deleteCertificate(certId string) error {
 	certIdInt, err := strconv.ParseInt(certId, 10, 64)
 	if err != nil {
@@ -155,11 +155,10 @@ func (c *SSLClient) deleteCertificate(certId string) error {
 		CertId: tea.Int64(certIdInt),
 	}
 
-	log.Printf("【test】delete request: %+v", request)
-	// _, err = c.client.DeleteUserCertificate(request)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to delete certificate: %v", err)
-	// }
+	_, err = c.client.DeleteUserCertificate(request)
+	if err != nil {
+		return fmt.Errorf("failed to delete certificate: %v", err)
+	}
 
 	log.Printf("Certificate %s deleted successfully", certId)
 	return nil

@@ -22,12 +22,12 @@ type SecretChangeCallback func(secret *corev1.Secret)
 
 // SecretMonitor 密钥监控器
 type SecretMonitor struct {
-	clientset      *kubernetes.Clientset //Kubernetes API 客户端句柄
-	cfg            *config.Config
-	callback       SecretChangeCallback //事件回调函数
-	watchedSecrets map[string]bool      //已监听的 Secret 列表,用于记录哪些 Secret 正在被监听
-	watchCancels   map[string]context.CancelFunc
-	mu             sync.RWMutex
+	clientset      *kubernetes.Clientset         //Kubernetes API 客户端句柄
+	cfg            *config.Config                //配置
+	callback       SecretChangeCallback          //事件回调函数
+	watchedSecrets map[string]bool               //已监听的 Secret 列表,用于记录哪些 Secret 正在被监听
+	watchCancels   map[string]context.CancelFunc //用于取消监听的上下文
+	mu             sync.RWMutex                  //互斥锁，用于保护共享资源
 }
 
 // NewClientset 创建 Kubernetes API 客户端句柄
@@ -35,13 +35,16 @@ func NewClientset(cfg *config.Config) (*kubernetes.Clientset, error) {
 	var kubeConfig *rest.Config
 	var err error
 
-	if cfg.Kubernetes.Kubeconfig != "" {
+	if cfg.Kubernetes.InCluster {
+		// in-cluster 模式初始化 Kubernetes 配置（serviceAccount）
+		kubeConfig, err = rest.InClusterConfig()
+	} else if cfg.Kubernetes.Kubeconfig != "" {
 		// kubeconfig 模式初始化 Kubernetes 配置（本地开发使用）
 		kubeConfig, err = clientcmd.BuildConfigFromFlags("", cfg.Kubernetes.Kubeconfig)
 	} else {
-		// in-cluster 模式初始化 Kubernetes 配置（serviceAccount）
-		kubeConfig, err = rest.InClusterConfig()
+		return nil, fmt.Errorf("must specify either in_cluster or kubeconfig in kubernetes config")
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes config: %v", err)
 	}
@@ -62,11 +65,11 @@ func NewSecretMonitor(cfg *config.Config, callback SecretChangeCallback) (*Secre
 	}
 
 	return &SecretMonitor{
-		clientset:      clientset,                           //Kubernetes API 客户端句柄
-		cfg:            cfg,                                 //配置文件
-		callback:       callback,                            //事件回调函数
-		watchedSecrets: make(map[string]bool),               //已监听的 Secret 列表,用于记录哪些 Secret 正在被监听
-		watchCancels:   make(map[string]context.CancelFunc), //用于取消监听的上下文
+		clientset:      clientset,
+		cfg:            cfg,
+		callback:       callback,
+		watchedSecrets: make(map[string]bool),
+		watchCancels:   make(map[string]context.CancelFunc),
 	}, nil
 }
 
