@@ -45,6 +45,12 @@ func main() {
 		log.Fatalf("Failed to create secret monitor: %v", err)
 	}
 
+	// 启动 watch 前先按配置做一次“阿里云是否存在证书”的全量比对
+	// 若不存在对应证书，先把 K8s Secret 同步到阿里云 SSL。
+	if err := sslClient.InitialSyncMissingCertificates(monitor); err != nil {
+		log.Fatalf("Failed to run initial sync: %v", err)
+	}
+
 	//启动secret监控器
 	if err := monitor.Start(); err != nil {
 		log.Fatalf("Failed to start monitor: %v", err)
@@ -79,11 +85,10 @@ func secretChangeHandler(secret *corev1.Secret) {
 		return
 	}
 	//同步到阿里云证书
-	fmt.Println("【test】sync secret to aliyun ssl from callBackHandler", secret, aliSSLName)
-	// if err := sslClient.SyncSecretToSSL(secret, aliSSLName); err != nil {
-	// 	log.Printf("Failed to sync secret %s to Aliyun SSL %s: %v", key, aliSSLName, err)
-	// 	return
-	// }
+	if err := sslClient.SyncSecretToSSL(secret, aliSSLName); err != nil {
+		log.Printf("Failed to sync secret %s to Aliyun SSL %s: %v", key, aliSSLName, err)
+		return
+	}
 
 	log.Printf("Successfully synced secret %s to Aliyun SSL %s", key, aliSSLName)
 }

@@ -5,19 +5,79 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 
 	"secret2ssl/pkg/config"
+	"secret2ssl/pkg/kubernetes"
 
-	cas "github.com/alibabacloud-go/cas-20200407/v3/client"          //阿里云 CAS（证书服务 / Certificate Authority Service） 的 Go SDK 客户端，用来调用 CAS 的 OpenAPI（例如上传/部署/查询证书、证书实例等
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client" //用来调用阿里云的 OpenAPI（例如上传/部署/查询证书、证书实例等)
-	"github.com/alibabacloud-go/tea/tea"                             //阿里云 SDK 生态的 通用工具/类型库，常见用途是处理指针值与默认值（如 tea.String("xx") / tea.Int32(1)）
-	corev1 "k8s.io/api/core/v1"                                      //用来调用 Kubernetes 的 API（例如获取/更新/删除 Secret 等)
+	cas "github.com/alibabacloud-go/cas-20200407/v3/client"
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	"github.com/alibabacloud-go/tea/tea"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // SSLClient 阿里云 CAS 客户端
 type SSLClient struct {
 	client *cas.Client    //阿里云 CAS 客户端
 	cfg    *config.Config //配置
+}
+
+// CertificateExists 检查阿里云 SSL 中是否已存在指定名称证书
+func (c *SSLClient) CertificateExists(name string) (bool, error) {
+	certID, err := c.findCertificateByName(name)
+	if err != nil {
+		return false, err
+	}
+	return certID != "", nil
+}
+
+// InitialSyncMissingCertificates 启动时先全量比对，不存在则先同步到ssl
+func (c *SSLClient) InitialSyncMissingCertificates(monitor *kubernetes.SecretMonitor) error {
+	log.Printf("Starting initial SSL compare for %d configured secret(s)", len(c.cfg.Secrets))
+
+	for _, secretCfg := range c.cfg.Secrets {
+		namespace := strings.TrimSpace(secretCfg.Namespace)
+		name := strings.TrimSpace(secretCfg.Name)
+		aliSSLName := strings.TrimSpace(secretCfg.AliSSLName)
+
+		if namespace == "" {
+			namespace = "default"
+		}
+		if name == "" {
+			log.Printf("Skip initial compare: empty secret name in config (namespace=%s)", namespace)
+			continue
+		}
+		if aliSSLName == "" {
+			log.Printf("Skip initial compare: %s/%s has empty ali_ssl_name", namespace, name)
+			continue
+		}
+
+		exists, err := c.CertificateExists(aliSSLName)
+		if err != nil {
+			return fmt.Errorf("compare aliyun SSL %q for secret %s/%s failed: %w", aliSSLName, namespace, name, err)
+		}
+		if exists {
+			log.Printf("Aliyun SSL %q already exists, skip initial sync for %s/%s", aliSSLName, namespace, name)
+			continue
+		}
+
+		secret, err := monitor.GetSecret(namespace, name)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Printf("Secret %s/%s not found during initial sync, skip now and wait for watch events", namespace, name)
+				continue
+			}
+			return fmt.Errorf("get secret %s/%s for initial sync failed: %w", namespace, name, err)
+		}
+		if err := c.SyncSecretToSSL(secret, aliSSLName); err != nil {
+			return fmt.Errorf("initial sync secret %s/%s to aliyun SSL %q failed: %w", namespace, name, aliSSLName, err)
+		}
+		log.Printf("Initial sync succeeded for %s/%s -> Aliyun SSL %q", namespace, name, aliSSLName)
+	}
+
+	log.Printf("Initial SSL compare completed")
+	return nil
 }
 
 // NewSSLClient 创建阿里云 CAS 客户端
@@ -90,7 +150,7 @@ func (c *SSLClient) SyncSecretToSSL(secret *corev1.Secret, aliSSLName string) er
 	if certId != "" {
 		log.Printf("Deleting existing certificate %s (ID: %s)", aliSSLName, certId)
 		//删除阿里云SSL中的证书，如果证书不存在或者证书正在使用中，则删除失败
-		if err := c.deleteCertificate(certId); err != nil {
+		if err := c.deleteCertificate(aliSSLName, certId); err != nil {
 			return fmt.Errorf("failed to delete existing certificate: %v", err)
 		}
 	}
@@ -102,24 +162,41 @@ func (c *SSLClient) SyncSecretToSSL(secret *corev1.Secret, aliSSLName string) er
 
 // findCertificateByName 在阿里云SSL查找证书
 func (c *SSLClient) findCertificateByName(name string) (string, error) {
-	// 创建请求
-	request := &cas.ListCertRequest{
-		ShowSize: tea.Int64(100), // 设置本次查询返回条数为 100（分页大小）
-	}
+	// UploadUserCertificate 的重名校验基于证书名称 Name，
+	// 因此这里改为按 Name 查询并返回可删除用的 CertificateId。
+	const pageSize int64 = 100
+	var currentPage int64 = 1
+	for {
+		request := &cas.ListUserCertificateOrderRequest{
+			OrderType:   tea.String("UPLOAD"),
+			Keyword:     tea.String(name),
+			CurrentPage: tea.Int64(currentPage),
+			ShowSize:    tea.Int64(pageSize),
+		}
 
-	// 发送请求，获取阿里云SSL中的证书列表
-	response, err := c.client.ListCert(request)
-	if err != nil {
-		return "", fmt.Errorf("failed to list certificates: %v", err)
-	}
+		response, err := c.client.ListUserCertificateOrder(request)
+		if err != nil {
+			return "", fmt.Errorf("failed to list user certificates: %v", err)
+		}
+		if response == nil || response.Body == nil || len(response.Body.CertificateOrderList) == 0 {
+			return "", nil
+		}
 
-	// 遍历证书列表
-	if response.Body.CertList != nil {
-		for _, cert := range response.Body.CertList {
-			if tea.StringValue(cert.Identifier) == name {
-				return tea.StringValue(cert.Identifier), nil
+		for _, cert := range response.Body.CertificateOrderList {
+			if cert == nil {
+				continue
+			}
+			log.Printf("ListUserCertificateOrder candidate: name=%q certificate_id=%d", tea.StringValue(cert.Name), tea.Int64Value(cert.CertificateId))
+			if tea.StringValue(cert.Name) == name && cert.CertificateId != nil {
+				log.Printf("ListUserCertificateOrder matched certificate: name=%q certificate_id=%d", tea.StringValue(cert.Name), tea.Int64Value(cert.CertificateId))
+				return strconv.FormatInt(tea.Int64Value(cert.CertificateId), 10), nil
 			}
 		}
+
+		if len(response.Body.CertificateOrderList) < int(pageSize) {
+			break
+		}
+		currentPage++
 	}
 
 	return "", nil
@@ -145,7 +222,7 @@ func (c *SSLClient) uploadCertificate(name, certPEM, keyPEM string) error {
 }
 
 // deleteCertificate 删除阿里云SSL中的证书
-func (c *SSLClient) deleteCertificate(certId string) error {
+func (c *SSLClient) deleteCertificate(certName, certId string) error {
 	certIdInt, err := strconv.ParseInt(certId, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid certificate ID: %v", err)
@@ -160,6 +237,6 @@ func (c *SSLClient) deleteCertificate(certId string) error {
 		return fmt.Errorf("failed to delete certificate: %v", err)
 	}
 
-	log.Printf("Certificate %s deleted successfully", certId)
+	log.Printf("Certificate deleted successfully: name=%q certificate_id=%s", certName, certId)
 	return nil
 }

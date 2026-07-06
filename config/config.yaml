@@ -1,8 +1,8 @@
 #需要同步的tls secrets
 secrets:
-  - name: dev.openxlab.org.cn-tls #需要同步的tls secret名称
-    namespace: mse-ingress-controller #需要同步的tls secret所属命名空间
-    ali_ssl_name: dev.openxlab.org.cn-tls #需要同步的tls secret在阿里云SSL中的名称
+  - name: model-dev.openxlab.org.cn-tls #需要同步的tls secret名称
+    namespace: medeval-dev #需要同步的tls secret所属命名空间
+    ali_ssl_name: model-dev.openxlab.org.cn-tls #需要同步的tls secret在阿里云SSL中的名称
 # ssl 配置项
 aliyun:
   # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
@@ -20,14 +20,14 @@ aliyun:
   # --from-literal=access_key_id=<'你的AK'> \
   # --from-literal=access_key_secret=<'你的SK'>
   credential_secret:
-    namespace: mse-ingress-controller #aksk的secret所属命名空间
+    namespace: medeval-dev #aksk的secret所属命名空间
     name: aliyun-cas-credential #aksk的secret名称
-    access_key_id_key: access_key_id #aksk的secret中的access_key_id key
-    access_key_secret_key: access_key_secret #aksk的secret中的access_key_secret key
+    access_key_id_key: public-access_key_id #aksk的secret中的access_key_id key
+    access_key_secret_key: public-access_key_secret #aksk的secret中的access_key_secret key
 # kubernetes 配置项
 kubernetes:
   # kubeconfig 方式（本地开发使用）
-  kubeconfig: "/Users/Zhuanz/.kube/public-dev"
+  kubeconfig: "/Users/Zhuanz/.kube/p-cluster-prod"
   # in-cluster 方式（Pod 内运行使用，自动使用 ServiceAccount）,优先级高于kubeconfig
   in_cluster: false
   # 重试/重连等待时间（秒）

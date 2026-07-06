@@ -1,23 +1,19 @@
-FROM golang:1.25.6-alpine AS builder
+FROM acr-openxlab-prod-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/golang:1.25.6 AS builder
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
 
-WORKDIR /app
-
-COPY go.mod go.sum ./
-RUN go mod download
-
+WORKDIR $GOPATH/src
 COPY . .
-
-RUN go build -o secret2ssl main.go
-
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
-
+RUN go env -w GOPROXY=https://mirrors.aliyun.com/goproxy/,direct && go build -o /app/ack-vpa-updater
+    
+FROM acr-openxlab-prod-registry-vpc.cn-shanghai.cr.aliyuncs.com/public/alpine:latest
 WORKDIR /app
 
-COPY --from=builder /app/secret2ssl .
-COPY config/config.yaml ./config/config.yaml
+COPY --from=builder /app .
 
-EXPOSE 8080
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
 
-CMD ["./secret2ssl"]
+ENTRYPOINT ["./secret2ssl"]
