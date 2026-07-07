@@ -1,8 +1,10 @@
 # secret2ssl
 
 `secret2ssl` 是一个运行在 Kubernetes 内外均可的 Go 服务，用于监听指定 TLS Secret（`tls.crt`/`tls.key`）变化，并自动同步到阿里云 SSL（CAS）证书管理。
-建议配置cert-manager、alidns-webhook、k8s-replicator完成证书的全托管自理（自签、验证、更换、同步），以下是整体的配合架构图：
-<img width="977" height="834" alt="image" src="https://github.com/user-attachments/assets/85e0b616-2d8a-4042-98ba-471663229c84" />
+建议配合cert-manager、alidns-webhook、k8s-replicator完成证书的全托管自理（自签、验证、更换、同步），以下是整体的配合架构图：
+<img width="980" height="833" alt="image" src="https://github.com/user-attachments/assets/8ab6b78f-2dd9-4c8f-9de1-612c55116395" />
+
+cert-manager、alidns-webhook、k8s-replicator均为开源工具，请自行查阅和配置。
 
 
 
