@@ -209,8 +209,9 @@ func (m *SecretMonitor) getResyncPeriod() int {
 func (m *SecretMonitor) getSecrets() []config.SecretConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]config.SecretConfig, len(m.cfg.Secrets))
-	copy(out, m.cfg.Secrets)
+	items := m.cfg.AllSecrets()
+	out := make([]config.SecretConfig, len(items))
+	copy(out, items)
 	return out
 }
 

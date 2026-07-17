@@ -19,8 +19,9 @@ import (
 
 // SSLClient 阿里云 CAS 客户端
 type SSLClient struct {
-	client *cas.Client    //阿里云 CAS 客户端
-	cfg    *config.Config //配置
+	client *cas.Client         //阿里云 CAS 客户端
+	cfg    config.AliyunConfig //该客户端对应的阿里云配置
+	name   string              //配置名称（用于日志）
 }
 
 // CertificateExists 检查阿里云 SSL 中是否已存在指定名称证书
@@ -33,10 +34,10 @@ func (c *SSLClient) CertificateExists(name string) (bool, error) {
 }
 
 // InitialSyncMissingCertificates 启动时先全量比对，不存在则先同步到ssl
-func (c *SSLClient) InitialSyncMissingCertificates(monitor *kubernetes.SecretMonitor) error {
-	log.Printf("Starting initial SSL compare for %d configured secret(s)", len(c.cfg.Secrets))
+func (c *SSLClient) InitialSyncMissingCertificates(monitor *kubernetes.SecretMonitor, secrets []config.SecretConfig) error {
+	log.Printf("[%s] Starting initial SSL compare for %d configured secret(s)", c.name, len(secrets))
 
-	for _, secretCfg := range c.cfg.Secrets {
+	for _, secretCfg := range secrets {
 		namespace := strings.TrimSpace(secretCfg.Namespace)
 		name := strings.TrimSpace(secretCfg.Name)
 		aliSSLName := strings.TrimSpace(secretCfg.AliSSLName)
@@ -49,50 +50,50 @@ func (c *SSLClient) InitialSyncMissingCertificates(monitor *kubernetes.SecretMon
 			continue
 		}
 		if aliSSLName == "" {
-			log.Printf("Skip initial compare: %s/%s has empty ali_ssl_name", namespace, name)
+			log.Printf("[%s] Skip initial compare: %s/%s has empty ali_ssl_name", c.name, namespace, name)
 			continue
 		}
 
 		exists, err := c.CertificateExists(aliSSLName)
 		if err != nil {
-			return fmt.Errorf("compare aliyun SSL %q for secret %s/%s failed: %w", aliSSLName, namespace, name, err)
+			return fmt.Errorf("[%s] compare aliyun SSL %q for secret %s/%s failed: %w", c.name, aliSSLName, namespace, name, err)
 		}
 		if exists {
-			log.Printf("Aliyun SSL %q already exists, skip initial sync for %s/%s", aliSSLName, namespace, name)
+			log.Printf("[%s] Aliyun SSL %q already exists, skip initial sync for %s/%s", c.name, aliSSLName, namespace, name)
 			continue
 		}
 
 		secret, err := monitor.GetSecret(namespace, name)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				log.Printf("Secret %s/%s not found during initial sync, skip now and wait for watch events", namespace, name)
+				log.Printf("[%s] Secret %s/%s not found during initial sync, skip now and wait for watch events", c.name, namespace, name)
 				continue
 			}
-			return fmt.Errorf("get secret %s/%s for initial sync failed: %w", namespace, name, err)
+			return fmt.Errorf("[%s] get secret %s/%s for initial sync failed: %w", c.name, namespace, name, err)
 		}
 		if err := c.SyncSecretToSSL(secret, aliSSLName); err != nil {
-			return fmt.Errorf("initial sync secret %s/%s to aliyun SSL %q failed: %w", namespace, name, aliSSLName, err)
+			return fmt.Errorf("[%s] initial sync secret %s/%s to aliyun SSL %q failed: %w", c.name, namespace, name, aliSSLName, err)
 		}
-		log.Printf("Initial sync succeeded for %s/%s -> Aliyun SSL %q", namespace, name, aliSSLName)
+		log.Printf("[%s] Initial sync succeeded for %s/%s -> Aliyun SSL %q", c.name, namespace, name, aliSSLName)
 	}
 
-	log.Printf("Initial SSL compare completed")
+	log.Printf("[%s] Initial SSL compare completed", c.name)
 	return nil
 }
 
 // NewSSLClient 创建阿里云 CAS 客户端
-func NewSSLClient(cfg *config.Config) (*SSLClient, error) {
+func NewSSLClient(name string, cfg config.AliyunConfig) (*SSLClient, error) {
 	config := &openapi.Config{
 		//设置阿里云凭证
-		AccessKeyId:     tea.String(cfg.Aliyun.AccessKeyID),
-		AccessKeySecret: tea.String(cfg.Aliyun.AccessKeySecret),
+		AccessKeyId:     tea.String(cfg.AccessKeyID),
+		AccessKeySecret: tea.String(cfg.AccessKeySecret),
 	}
 
-	endpoint := cfg.Aliyun.SSLEndpoint // 默认使用外网 endpoint
-	if cfg.Aliyun.UseInternalEndpoint {
-		endpoint = cfg.Aliyun.SSLInternalEndpoint
+	endpoint := cfg.SSLEndpoint // 默认使用外网 endpoint
+	if cfg.UseInternalEndpoint {
+		endpoint = cfg.SSLInternalEndpoint
 		if endpoint == "" {
-			endpoint = "cas-vpc." + cfg.Aliyun.Region + ".aliyuncs.com"
+			endpoint = "cas-vpc." + cfg.Region + ".aliyuncs.com"
 		}
 	}
 	if endpoint == "" {
@@ -109,6 +110,7 @@ func NewSSLClient(cfg *config.Config) (*SSLClient, error) {
 	return &SSLClient{
 		client: client,
 		cfg:    cfg,
+		name:   name,
 	}, nil
 }
 

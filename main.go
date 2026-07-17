@@ -15,10 +15,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sclient "k8s.io/client-go/kubernetes"
 )
 
-var sslClient *aliyun.SSLClient
 var cfg *config.Config
+var secretSyncTargets map[string][]syncTarget
+
+type syncTarget struct {
+	AliyunName string
+	AliSSLName string
+	Client     *aliyun.SSLClient
+}
 
 func main() {
 	log.Println("Starting secret2ssl...")
@@ -28,15 +35,61 @@ func main() {
 	}
 
 	cfg = config.GetConfig()
-	if err := loadAliyunCredentialFromSecret(cfg); err != nil {
-		log.Fatalf("Failed to load aliyun credentials from k8s secret: %v", err)
+	if err := cfg.ValidateAndNormalize(); err != nil {
+		log.Fatalf("Invalid config: %v", err)
 	}
 
-	var err error
-	//创建阿里云CAS客户端
-	sslClient, err = aliyun.NewSSLClient(cfg)
+	clientset, err := kubernetes.NewClientset(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create SSL client: %v", err)
+		log.Fatalf("Failed to create kubernetes client: %v", err)
+	}
+
+	aliyunConfigs := cfg.AliyunConfigs
+
+	secretSyncTargets = make(map[string][]syncTarget)
+	clientsByName := make(map[string]*aliyun.SSLClient)
+
+	for _, item := range aliyunConfigs {
+		aliyunName := item.Name
+
+		aliyunCfg := item.Aliyun
+		if err := loadAliyunCredentialFromSecret(clientset, &aliyunCfg, aliyunName); err != nil {
+			log.Fatalf("Failed to load aliyun credentials for %s: %v", aliyunName, err)
+		}
+
+		client, err := aliyun.NewSSLClient(aliyunName, aliyunCfg)
+		if err != nil {
+			log.Fatalf("Failed to create SSL client for %s: %v", aliyunName, err)
+		}
+		clientsByName[aliyunName] = client
+
+		for _, secretCfg := range item.Secrets {
+			secretName := strings.TrimSpace(secretCfg.Name)
+			if secretName == "" {
+				log.Printf("[%s] Skip empty secret name", aliyunName)
+				continue
+			}
+			secretNS := strings.TrimSpace(secretCfg.Namespace)
+			if secretNS == "" {
+				secretNS = "default"
+			}
+			aliSSLName := strings.TrimSpace(secretCfg.AliSSLName)
+			if aliSSLName == "" {
+				log.Printf("[%s] Skip %s/%s due to empty ali_ssl_name", aliyunName, secretNS, secretName)
+				continue
+			}
+
+			key := fmt.Sprintf("%s/%s", secretNS, secretName)
+			secretSyncTargets[key] = append(secretSyncTargets[key], syncTarget{
+				AliyunName: aliyunName,
+				AliSSLName: aliSSLName,
+				Client:     client,
+			})
+		}
+	}
+
+	if len(secretSyncTargets) == 0 {
+		log.Fatalf("No valid secret sync targets found in aliyun_configs")
 	}
 
 	//创建secret监控器
@@ -45,10 +98,16 @@ func main() {
 		log.Fatalf("Failed to create secret monitor: %v", err)
 	}
 
-	// 启动 watch 前先按配置做一次“阿里云是否存在证书”的全量比对
-	// 若不存在对应证书，先把 K8s Secret 同步到阿里云 SSL。
-	if err := sslClient.InitialSyncMissingCertificates(monitor); err != nil {
-		log.Fatalf("Failed to run initial sync: %v", err)
+	// 启动前先做每个阿里云账号的初始补齐同步（仅阿里云不存在时上传）
+	for _, item := range aliyunConfigs {
+		aliyunName := item.Name
+		client := clientsByName[aliyunName]
+		if client == nil {
+			continue
+		}
+		if err := client.InitialSyncMissingCertificates(monitor, item.Secrets); err != nil {
+			log.Fatalf("Initial sync failed for %s: %v", aliyunName, err)
+		}
 	}
 
 	//启动secret监控器
@@ -72,40 +131,34 @@ func secretChangeHandler(secret *corev1.Secret) {
 	key := fmt.Sprintf("%s/%s", secret.Namespace, secret.Name)
 	log.Printf("Handling secret change: %s", key)
 
-	var aliSSLName string
-	for _, secretCfg := range cfg.Secrets {
-		if secretCfg.Namespace == secret.Namespace && secretCfg.Name == secret.Name {
-			aliSSLName = secretCfg.AliSSLName
-			break
-		}
-	}
-
-	if aliSSLName == "" {
+	targets := secretSyncTargets[key]
+	if len(targets) == 0 {
 		log.Printf("No Aliyun SSL name configured for %s", key)
 		return
 	}
-	//同步到阿里云证书
-	if err := sslClient.SyncSecretToSSL(secret, aliSSLName); err != nil {
-		log.Printf("Failed to sync secret %s to Aliyun SSL %s: %v", key, aliSSLName, err)
-		return
-	}
 
-	log.Printf("Successfully synced secret %s to Aliyun SSL %s", key, aliSSLName)
+	for _, target := range targets {
+		if err := target.Client.SyncSecretToSSL(secret, target.AliSSLName); err != nil {
+			log.Printf("Failed to sync secret %s to Aliyun(%s) SSL %s: %v", key, target.AliyunName, target.AliSSLName, err)
+			continue
+		}
+		log.Printf("Successfully synced secret %s to Aliyun(%s) SSL %s", key, target.AliyunName, target.AliSSLName)
+	}
 }
 
 // loadAliyunCredentialFromSecret 从 Kubernetes Secret 加载阿里云凭证
-func loadAliyunCredentialFromSecret(cfg *config.Config) error {
-	configAccessKeyID := strings.TrimSpace(cfg.Aliyun.AccessKeyID)
-	configAccessKeySecret := strings.TrimSpace(cfg.Aliyun.AccessKeySecret)
+func loadAliyunCredentialFromSecret(clientset *k8sclient.Clientset, aliyunCfg *config.AliyunConfig, aliyunName string) error {
+	configAccessKeyID := strings.TrimSpace(aliyunCfg.AccessKeyID)
+	configAccessKeySecret := strings.TrimSpace(aliyunCfg.AccessKeySecret)
 	hasConfigCredential := configAccessKeyID != "" && configAccessKeySecret != ""
 
-	secretRef := cfg.Aliyun.CredentialSecret
+	secretRef := aliyunCfg.CredentialSecret
 	if secretRef.Name == "" { //没有配置secret引用
-		// 向后兼容：未配置 Secret 引用时，沿用 config.yaml 中的明文配置
+		// 未配置 Secret 引用时，使用该 aliyun 配置项中的明文 AK/SK
 		if !hasConfigCredential { //没有明文，返回错误
-			return fmt.Errorf("aliyun credentials are empty: configure credential_secret or set access_key_id/access_key_secret in config")
+			return fmt.Errorf("aliyun credentials are empty: configure credential_secret or set access_key_id/access_key_secret in config for %s", aliyunName)
 		}
-		log.Printf("Aliyun credentials loaded from config file")
+		log.Printf("[%s] Aliyun credentials loaded from config file", aliyunName)
 		return nil //有明文，返回成功
 	}
 
@@ -123,11 +176,6 @@ func loadAliyunCredentialFromSecret(cfg *config.Config) error {
 	if accessKeySecretKey == "" {
 		accessKeySecretKey = "access_key_secret"
 	}
-	//创建kubernetes客户端
-	clientset, err := kubernetes.NewClientset(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create kubernetes client: %v", err)
-	}
 	//获取secret
 	secret, err := clientset.CoreV1().Secrets(namespace).Get(
 		context.Background(),
@@ -137,9 +185,9 @@ func loadAliyunCredentialFromSecret(cfg *config.Config) error {
 	if err != nil {
 		// Secret 不可用时，若配置文件里有明文，自动回退，避免启动失败
 		if hasConfigCredential {
-			cfg.Aliyun.AccessKeyID = configAccessKeyID
-			cfg.Aliyun.AccessKeySecret = configAccessKeySecret
-			log.Printf("Failed to read secret %s/%s, fallback to config file credentials: %v", namespace, secretRef.Name, err)
+			aliyunCfg.AccessKeyID = configAccessKeyID
+			aliyunCfg.AccessKeySecret = configAccessKeySecret
+			log.Printf("[%s] Failed to read secret %s/%s, fallback to config file credentials: %v", aliyunName, namespace, secretRef.Name, err)
 			return nil
 		}
 		return fmt.Errorf("failed to read secret %s/%s: %v", namespace, secretRef.Name, err)
@@ -148,9 +196,9 @@ func loadAliyunCredentialFromSecret(cfg *config.Config) error {
 	accessKeyID, ok := secret.Data[accessKeyIDKey]
 	if !ok {
 		if hasConfigCredential {
-			cfg.Aliyun.AccessKeyID = configAccessKeyID
-			cfg.Aliyun.AccessKeySecret = configAccessKeySecret
-			log.Printf("Secret %s/%s missing key %q, fallback to config file credentials", namespace, secretRef.Name, accessKeyIDKey)
+			aliyunCfg.AccessKeyID = configAccessKeyID
+			aliyunCfg.AccessKeySecret = configAccessKeySecret
+			log.Printf("[%s] Secret %s/%s missing key %q, fallback to config file credentials", aliyunName, namespace, secretRef.Name, accessKeyIDKey)
 			return nil
 		}
 		return fmt.Errorf("secret %s/%s missing key %q", namespace, secretRef.Name, accessKeyIDKey)
@@ -159,26 +207,26 @@ func loadAliyunCredentialFromSecret(cfg *config.Config) error {
 	accessKeySecret, ok := secret.Data[accessKeySecretKey]
 	if !ok {
 		if hasConfigCredential {
-			cfg.Aliyun.AccessKeyID = configAccessKeyID
-			cfg.Aliyun.AccessKeySecret = configAccessKeySecret
-			log.Printf("Secret %s/%s missing key %q, fallback to config file credentials", namespace, secretRef.Name, accessKeySecretKey)
+			aliyunCfg.AccessKeyID = configAccessKeyID
+			aliyunCfg.AccessKeySecret = configAccessKeySecret
+			log.Printf("[%s] Secret %s/%s missing key %q, fallback to config file credentials", aliyunName, namespace, secretRef.Name, accessKeySecretKey)
 			return nil
 		}
 		return fmt.Errorf("secret %s/%s missing key %q", namespace, secretRef.Name, accessKeySecretKey)
 	}
 	//覆盖config中的明文凭证
-	cfg.Aliyun.AccessKeyID = strings.TrimSpace(string(accessKeyID))
-	cfg.Aliyun.AccessKeySecret = strings.TrimSpace(string(accessKeySecret))
-	if cfg.Aliyun.AccessKeyID == "" || cfg.Aliyun.AccessKeySecret == "" {
+	aliyunCfg.AccessKeyID = strings.TrimSpace(string(accessKeyID))
+	aliyunCfg.AccessKeySecret = strings.TrimSpace(string(accessKeySecret))
+	if aliyunCfg.AccessKeyID == "" || aliyunCfg.AccessKeySecret == "" {
 		if hasConfigCredential {
-			cfg.Aliyun.AccessKeyID = configAccessKeyID
-			cfg.Aliyun.AccessKeySecret = configAccessKeySecret
-			log.Printf("Secret %s/%s contains empty credentials, fallback to config file credentials", namespace, secretRef.Name)
+			aliyunCfg.AccessKeyID = configAccessKeyID
+			aliyunCfg.AccessKeySecret = configAccessKeySecret
+			log.Printf("[%s] Secret %s/%s contains empty credentials, fallback to config file credentials", aliyunName, namespace, secretRef.Name)
 			return nil
 		}
 		return fmt.Errorf("secret %s/%s contains empty aliyun credentials", namespace, secretRef.Name)
 	}
 
-	log.Printf("Aliyun credentials loaded from secret %s/%s", namespace, secretRef.Name)
+	log.Printf("[%s] Aliyun credentials loaded from secret %s/%s", aliyunName, namespace, secretRef.Name)
 	return nil
 }

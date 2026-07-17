@@ -4,6 +4,8 @@
 
 ## 功能特性
 
+- 支持多个阿里云 AK/SK 配置项（`aliyun_configs`）
+- 每个阿里云配置项支持同步多个 Kubernetes TLS Secret
 - 监听多个 Kubernetes TLS Secret 的新增/更新事件
 - 启动时执行一次全量比对：阿里云不存在证书时自动补传
 - 证书存在时先删除旧证书再上传新证书，避免同名冲突
@@ -18,10 +20,10 @@
 ## 工作流程
 
 1. 加载 `config/config.yaml`
-2. 读取阿里云凭证（优先从 `credential_secret`）
-3. 初始化阿里云 CAS 客户端
+2. 读取每个阿里云配置项的凭证（优先从各自 `credential_secret`）
+3. 为每个阿里云配置项初始化 CAS 客户端
 4. 启动前执行一次初始同步（仅同步阿里云不存在的证书）
-5. 监听 Secret 变化并实时同步到阿里云
+5. 监听 Secret 变化并按映射实时同步到对应阿里云账号
 
 ## 目录结构
 
@@ -61,23 +63,45 @@
 ### 示例
 
 ```yaml
-secrets:
-  - name: example-com-tls
-    namespace: demo
-    ali_ssl_name: example-com-tls
+aliyun_configs:
+  - name: account-a
+    aliyun:
+      access_key_id: ""
+      access_key_secret: ""
+      region: cn-hangzhou
+      ssl_endpoint: cas.aliyuncs.com
+      ssl_internal_endpoint: ""
+      use_internal_endpoint: false
+      credential_secret:
+        namespace: demo
+        name: aliyun-cas-credential-a
+        access_key_id_key: access_key_id
+        access_key_secret_key: access_key_secret
+    secrets:
+      - name: example-com-tls
+        namespace: demo
+        ali_ssl_name: example-com-tls
+      - name: example-com-tls-backup
+        namespace: demo
+        ali_ssl_name: example-com-tls-backup
 
-aliyun:
-  access_key_id: ""
-  access_key_secret: ""
-  region: cn-hangzhou
-  ssl_endpoint: cas.aliyuncs.com
-  ssl_internal_endpoint: ""
-  use_internal_endpoint: false
-  credential_secret:
-    namespace: demo
-    name: aliyun-cas-credential
-    access_key_id_key: access_key_id
-    access_key_secret_key: access_key_secret
+  - name: account-b
+    aliyun:
+      access_key_id: ""
+      access_key_secret: ""
+      region: cn-hangzhou
+      ssl_endpoint: cas.aliyuncs.com
+      ssl_internal_endpoint: ""
+      use_internal_endpoint: false
+      credential_secret:
+        namespace: demo
+        name: aliyun-cas-credential-b
+        access_key_id_key: access_key_id
+        access_key_secret_key: access_key_secret
+    secrets:
+      - name: another-domain-tls
+        namespace: demo
+        ali_ssl_name: another-domain
 
 kubernetes:
   kubeconfig: "/path/to/kubeconfig"
@@ -91,7 +115,9 @@ logging:
 
 ### 关键字段
 
-- `secrets[]`：需要监听并同步的 Secret 列表
+- `aliyun_configs[]`：阿里云账号配置列表
+- `aliyun_configs[].aliyun`：该账号的 AK/SK、region、endpoint 与 `credential_secret`
+- `aliyun_configs[].secrets[]`：该账号下要同步的 Secret 列表
 - `ali_ssl_name`：同步到阿里云后的证书名称
 - `credential_secret`：阿里云 AK/SK 的 K8s Secret 引用（推荐）
 - `in_cluster`：`true` 时走 Pod ServiceAccount，优先级高于 `kubeconfig`
@@ -135,7 +161,7 @@ kubectl -n demo create secret generic aliyun-cas-credential \
   --from-literal=access_key_secret='<你的SK>'
 ```
 
-然后在 `config.yaml` 的 `aliyun.credential_secret` 中引用该 Secret。
+然后在 `config.yaml` 的 `aliyun_configs[].aliyun.credential_secret` 中引用该 Secret。
 
 ## 常见问题
 

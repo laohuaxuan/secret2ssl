@@ -5,29 +5,33 @@ metadata:
   namespace: devops
 data:
   config.yaml: |
-    #需要同步的tls secrets
-    secrets:
-      - name: model-dev.openxlab.org.cn-tls #需要同步的tls secret名称
-        namespace: medeval-dev #需要同步的tls secret所属命名空间
-        ali_ssl_name: model-dev.openxlab.org.cn-tls #需要同步的tls secret在阿里云SSL中的名称
-    # ssl 配置项
-    aliyun:
-      # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
-      access_key_id: ""
-      access_key_secret: ""
-      region: cn-hangzhou
-      # 外网 endpoint（use_internal_endpoint=false 时生效）
-      ssl_endpoint: cas.aliyuncs.com
-      # 内网 endpoint（use_internal_endpoint=true 时优先使用，留空则自动使用 cas-vpc.<region>.aliyuncs.com）
-      ssl_internal_endpoint: ""
-      # 是否使用内网 endpoint
-      use_internal_endpoint: false
-      # 阿里云凭证来源（Kubernetes Secret）
-      credential_secret:
-        namespace: medeval-dev #aksk的secret所属命名空间
-        name: aliyun-cas-credential #aksk的secret名称
-        access_key_id_key: access_key_id #aksk的secret中的access_key_id key
-        access_key_secret_key: access_key_secret #aksk的secret中的access_key_secret key
+    # 多 aliyun 配置项（每个配置项可同步多个 secrets）
+    aliyun_configs:
+      - name: account-a
+        aliyun:
+          # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
+          access_key_id: ""
+          access_key_secret: ""
+          region: cn-hangzhou
+          # 外网 endpoint（use_internal_endpoint=false 时生效）
+          ssl_endpoint: cas.aliyuncs.com
+          # 内网 endpoint（use_internal_endpoint=true 时优先使用，留空则自动使用 cas-vpc.<region>.aliyuncs.com）
+          ssl_internal_endpoint: ""
+          # 是否使用内网 endpoint
+          use_internal_endpoint: false
+          # 阿里云凭证来源（Kubernetes Secret）
+          credential_secret:
+            namespace: medeval-dev
+            name: aliyun-cas-credential-a
+            access_key_id_key: access_key_id
+            access_key_secret_key: access_key_secret
+        secrets:
+          - name: model-dev.openxlab.org.cn-tls
+            namespace: medeval-dev
+            ali_ssl_name: model-dev.openxlab.org.cn-tls
+          - name: model-dev.openxlab.org.cn-tls-backup
+            namespace: medeval-dev
+            ali_ssl_name: model-dev.openxlab.org.cn-tls-backup
     # kubernetes 配置项
     kubernetes:
       # kubeconfig 方式（本地开发使用）

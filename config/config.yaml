@@ -1,33 +1,38 @@
-#需要同步的tls secrets
-secrets:
-  - name: model-dev.openxlab.org.cn-tls #需要同步的tls secret名称
-    namespace: medeval-dev #需要同步的tls secret所属命名空间
-    ali_ssl_name: model-dev.openxlab.org.cn-tls #需要同步的tls secret在阿里云SSL中的名称
-# ssl 配置项
-aliyun:
-  # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
-  access_key_id: ""
-  access_key_secret: ""
-  region: cn-hangzhou
-  # 外网 endpoint（use_internal_endpoint=false 时生效）
-  ssl_endpoint: cas.aliyuncs.com
-  # 内网 endpoint（use_internal_endpoint=true 时优先使用，留空则自动使用 cas-vpc.<region>.aliyuncs.com）
-  ssl_internal_endpoint: ""
-  # 是否使用内网 endpoint
-  use_internal_endpoint: false
-  # 阿里云凭证来源（Kubernetes Secret）
-  # kubectl -n <namespace> create secret generic <secret-name> \
-  # --from-literal=access_key_id=<'你的AK'> \
-  # --from-literal=access_key_secret=<'你的SK'>
-  credential_secret:
-    namespace: medeval-dev #aksk的secret所属命名空间
-    name: aliyun-cas-credential #aksk的secret名称
-    access_key_id_key: public-access_key_id #aksk的secret中的access_key_id key
-    access_key_secret_key: public-access_key_secret #aksk的secret中的access_key_secret key
+# 多 aliyun 配置项（每个配置项可同步多个 secrets）
+aliyun_configs:
+  - name: PJOpenXlabPublic
+    aliyun:
+      # 建议留空，通过 credential_secret 从 Kubernetes Secret 注入
+      access_key_id: ""
+      access_key_secret: ""
+      region: cn-hangzhou
+      # 外网 endpoint（use_internal_endpoint=false 时生效）
+      ssl_endpoint: cas.aliyuncs.com
+      # 内网 endpoint（use_internal_endpoint=true 时优先使用，留空则自动使用 cas-vpc.<region>.aliyuncs.com）
+      ssl_internal_endpoint: ""
+      # 是否使用内网 endpoint
+      use_internal_endpoint: false
+      # 阿里云凭证来源（Kubernetes Secret）
+      # kubectl -n <namespace> create secret generic <secret-name> \
+      # --from-literal=access_key_id=<'你的AK'> \
+      # --from-literal=access_key_secret=<'你的SK'>
+      credential_secret:
+        namespace: devops
+        name: aliyun-cas-credential
+        access_key_id_key: public-access_key_id
+        access_key_secret_key: public-access_key_secret
+    secrets:
+      # - name: staging.openxlab.org.cn-tls
+      #   namespace: mse-ingress-controller
+      #   ali_ssl_name: staging.openxlab.org.cn
+      - name: shlab.tech-tls
+        namespace: mse-ingress-controller
+        ali_ssl_name: shlab.tech
+
 # kubernetes 配置项
 kubernetes:
   # kubeconfig 方式（本地开发使用）
-  kubeconfig: "/Users/Zhuanz/.kube/p-cluster-prod"
+  kubeconfig: "/Users/Zhuanz/.kube/public-dev"
   # in-cluster 方式（Pod 内运行使用，自动使用 ServiceAccount）,优先级高于kubeconfig
   in_cluster: false
   # 重试/重连等待时间（秒）
